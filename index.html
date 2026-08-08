@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>CoreWeave Cutsheet Lookup</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="topbar">
+    <div class="topbar-inner">
+      <div class="brand">
+        <div class="logo">CW</div>
+        <div>
+          Cutsheet Lookup
+          <small>Rack &amp; RU &rarr; optic transceivers</small>
+        </div>
+      </div>
+      <div class="spacer"></div>
+      <span id="statusChip" class="status-chip"><span class="dot"></span><span id="statusText">No cutsheet loaded</span></span>
+      <button id="themeBtn" class="icon-btn" title="Toggle light / dark">&#9681;</button>
+    </div>
+  </div>
+
+  <div class="app">
+
+    <!-- STEP 1: Load cutsheet -->
+    <section id="loadCard" class="card">
+      <div class="card-head" data-toggle>
+        <h2><span class="step">1</span> Load cutsheet</h2>
+        <span class="sub" id="loadSub"></span>
+        <span class="chev">&#9660;</span>
+      </div>
+      <div class="card-body">
+        <div id="dropzone" class="dropzone">
+          <div class="cloud">&#128193;</div>
+          <div class="big">Drop your cutsheet here, or click to browse</div>
+          <div class="hint">Excel (.xlsx, .xls) or CSV &middot; everything is processed locally in your browser</div>
+          <input id="fileInput" type="file" accept=".xlsx,.xls,.csv,.tsv" class="hidden" />
+        </div>
+        <div id="fileInfo" class="file-info">
+          <span class="fi-icon">&#128196;</span>
+          <div>
+            <div class="fi-name" id="fiName">—</div>
+            <div class="fi-meta" id="fiMeta">—</div>
+          </div>
+          <span class="spacer"></span>
+          <label class="fld" style="margin:0; min-width:220px;" id="sheetPickWrap">
+            <span class="lbl">Worksheet</span>
+            <select id="sheetSelect"></select>
+          </label>
+          <button class="btn ghost sm" id="clearFileBtn">Remove</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- STEP 2: Column mapping -->
+    <section id="mapCard" class="card collapsed hidden">
+      <div class="card-head" data-toggle>
+        <h2><span class="step">2</span> Map columns</h2>
+        <span class="sub" id="mapSub">auto-detected — expand to adjust</span>
+        <span class="chev">&#9660;</span>
+      </div>
+      <div class="card-body">
+        <div id="mapBanner" class="banner warn"></div>
+
+        <p class="mini-hint" style="margin-top:0;">
+          Tell the tool which columns describe a connection's <b>endpoints</b> (the rack/RU locations)
+          and which columns hold the <b>optic transceiver part numbers</b>. It has guessed based on your
+          headers — adjust anything that looks wrong.
+        </p>
+
+        <div style="font-size:12.5px;font-weight:600;color:var(--text-muted);text-transform:uppercase;letter-spacing:.03em;margin:6px 0 10px;">Connection endpoints (locations)</div>
+        <div id="endpointsContainer"></div>
+        <button class="btn ghost sm" id="addEndpointBtn">+ Add another endpoint column</button>
+
+        <div style="font-size:12.5px;font-weight:600;color:var(--text-muted);text-transform:uppercase;letter-spacing:.03em;margin:22px 0 10px;">Optic transceivers</div>
+        <div id="opticsContainer"></div>
+        <button class="btn ghost sm" id="addOpticBtn">+ Add another optic column</button>
+
+        <div style="margin-top:20px;display:flex;gap:10px;">
+          <button class="btn secondary sm" id="remapBtn">Re-run auto-detect</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- STEP 3: Search -->
+    <section id="searchCard" class="card hidden">
+      <div class="card-head" style="cursor:default;">
+        <h2><span class="step">3</span> Look up a location</h2>
+      </div>
+      <div class="card-body">
+        <div class="search-wrap">
+          <div class="search-input-wrap">
+            <span class="mag">&#128269;</span>
+            <input id="queryInput" type="search" placeholder="s1:05:30" autocomplete="off" spellcheck="false" />
+          </div>
+          <button class="btn search-btn" id="searchBtn">Search</button>
+        </div>
+        <div class="examples">
+          Format <b>sector:rack:RU</b> — e.g.
+          <span class="chip" data-ex="s1:05:30">s1:05:30</span>
+          full location, or
+          <span class="chip" data-ex="s1:05">s1:05</span>
+          every RU in a rack. Search several at once, comma-separated.
+        </div>
+      </div>
+    </section>
+
+    <!-- RESULTS -->
+    <section id="results">
+      <div id="resultBanner" class="banner"></div>
+
+      <div class="summary-cards">
+        <div class="stat"><div class="num" id="statConns">0</div><div class="lab">Matching connections</div></div>
+        <div class="stat accent"><div class="num" id="statOptics">0</div><div class="lab">Optic transceivers needed</div></div>
+        <div class="stat"><div class="num" id="statPNs">0</div><div class="lab">Distinct part numbers</div></div>
+      </div>
+
+      <!-- Optics summary -->
+      <div class="section-title">
+        Optics required <span class="count" id="opticsCount">0</span>
+        <span class="actions">
+          <button class="btn secondary sm" id="copyOpticsBtn">Copy</button>
+          <button class="btn secondary sm" id="csvOpticsBtn">Export CSV</button>
+        </span>
+      </div>
+      <div class="opt-toggle">
+        Count optics:
+        <span class="mode-toggle" id="opticScopeToggle">
+          <button data-scope="endpoint" class="active">At searched location</button>
+          <button data-scope="all">Whole connection (both ends)</button>
+        </span>
+      </div>
+      <div class="table-wrap" style="margin-bottom:26px;">
+        <table class="opt-table">
+          <thead><tr><th>Optic Part Number</th><th id="descHead">Description</th><th style="text-align:right;">Quantity</th></tr></thead>
+          <tbody id="opticsBody"></tbody>
+        </table>
+      </div>
+
+      <!-- Matching connections -->
+      <div class="section-title">
+        Matching connections <span class="count" id="connCount">0</span>
+        <span class="actions">
+          <button class="btn secondary sm" id="csvConnsBtn">Export CSV</button>
+        </span>
+      </div>
+      <div class="table-wrap">
+        <table id="connTable">
+          <thead><tr id="connHead"></tr></thead>
+          <tbody id="connBody"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <div class="footer-note">
+      <span class="lock">&#128274;</span> Your cutsheet never leaves this computer — all parsing and searching happens in the browser, nothing is uploaded.<br />
+      CoreWeave Cutsheet Lookup &middot; single-file tool &middot; works offline.
+    </div>
+  </div>
+
+  <script src="vendor/xlsx.full.min.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
