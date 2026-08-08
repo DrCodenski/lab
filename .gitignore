@@ -1,4 +1,4 @@
 node_modules/
 package-lock.json
-scratch-screenshot-*.png
+scratch-*.png
 .DS_Store

@@ -204,7 +204,7 @@
     H.forEach((h, i) => { if (isLoc(h)) combinedLocs.push(i); });
     if (combinedLocs.length) {
       combinedLocs.forEach((i) =>
-        endpoints.push({ mode: "combined", combined: i, sector: null, rack: null, ru: null, name: sideName(state.headers[i]) })
+        endpoints.push({ mode: "combined", combined: i, sector: null, rack: null, ru: null, name: sideName(state.headers[i]), side: sideToken(state.headers[i]) })
       );
     } else {
       // ---- Endpoints (split sector/rack/RU columns), grouped by A/Z side ----
@@ -221,7 +221,7 @@
         const sector = sectorCols[k] != null ? sectorCols[k] : (sectorCols[0] != null ? sectorCols[0] : null);
         if (rack == null && ru == null) continue;
         const refIdx = rack != null ? rack : ru;
-        endpoints.push({ mode: "split", combined: null, sector, rack, ru, name: sideName(state.headers[refIdx]) });
+        endpoints.push({ mode: "split", combined: null, sector, rack, ru, name: sideName(state.headers[refIdx]), side: sideToken(state.headers[refIdx]) });
       }
     }
 
@@ -233,10 +233,11 @@
     const qtyCol = H.findIndex(isQty);
     opticCols.forEach((i) => {
       const nm = state.headers[i];
-      // Try to link this optic to an endpoint that shares a side token (a/z/1/2/src/dst).
-      const ep = matchEndpointBySide(nm, endpoints);
       const desc = findSiblingDesc(i, H, isDesc);
-      optics.push({ pn: i, qty: qtyCol >= 0 ? qtyCol : null, desc, endpoint: ep, name: nm });
+      // Optics are tied to a *side* (a/z/1/2). "At searched location" then counts
+      // an optic when the query matched any endpoint on that same side — robust
+      // even when a side has several location columns (locode, patch-panel, …).
+      optics.push({ pn: i, qty: qtyCol >= 0 ? qtyCol : null, desc, endpoint: null, side: sideToken(nm), name: nm });
     });
 
     state.mapping.endpoints = endpoints;
@@ -268,12 +269,16 @@
     return null;
   }
 
-  function matchEndpointBySide(opticHeader, endpoints) {
-    const side = sideToken(opticHeader);
-    if (!side || !endpoints.length) return endpoints.length ? null : null;
-    for (let i = 0; i < endpoints.length; i++) {
-      const epName = endpoints[i].name;
-      if (sideToken(epName) === side) return i;
+  // Which endpoint indices does this optic belong to?
+  //  - explicit override (op.endpoint) wins;
+  //  - otherwise every endpoint sharing the optic's side (a/z/1/2);
+  //  - null means "can't tell" (caller counts it for the whole connection).
+  function opticEndpointIdxs(op, endpoints) {
+    if (op.endpoint != null) return [op.endpoint];
+    if (op.side) {
+      const idxs = [];
+      endpoints.forEach((ep, i) => { if (ep.side && ep.side === op.side) idxs.push(i); });
+      if (idxs.length) return idxs;
     }
     return null;
   }
@@ -332,7 +337,7 @@
         l.appendChild(mkLabel("Location column"));
         const s = document.createElement("select");
         s.appendChild(colOptions(ep.combined, false));
-        s.onchange = () => { ep.combined = parseInt(s.value, 10); ep.name = state.headers[ep.combined]; };
+        s.onchange = () => { ep.combined = parseInt(s.value, 10); ep.name = state.headers[ep.combined]; ep.side = sideToken(ep.name); };
         l.appendChild(s);
         block.appendChild(l);
       } else {
@@ -368,7 +373,7 @@
       pnL.appendChild(mkLabel("Optic PN column"));
       const pnS = document.createElement("select");
       pnS.appendChild(colOptions(op.pn, false));
-      pnS.onchange = () => { op.pn = parseInt(pnS.value, 10); op.name = state.headers[op.pn]; };
+      pnS.onchange = () => { op.pn = parseInt(pnS.value, 10); op.name = state.headers[op.pn]; op.side = sideToken(op.name); };
       pnL.appendChild(pnS); row.appendChild(pnL);
 
       // Qty column
@@ -401,7 +406,7 @@
         assoc.style.margin = "0 0 14px";
         assoc.appendChild(mkLabel("This optic sits at"));
         const aS = document.createElement("select");
-        const none = el("option", null, "— any / unassigned —"); none.value = "";
+        const none = el("option", null, "— auto (by side) —"); none.value = "";
         if (op.endpoint == null) none.selected = true;
         aS.appendChild(none);
         epNames.forEach((n, i) => {
@@ -473,9 +478,16 @@
       return;
     }
 
+    const matchedRows = matchRowsPure(state.rows, state.mapping.endpoints, queries);
+    state.lastResult = { queries, matchedRows };
+    renderResults();
+  }
+
+  // Pure: find rows whose mapped endpoints satisfy any query. No DOM/state.
+  function matchRowsPure(rows, endpoints, queries) {
     const matchedRows = [];
-    state.rows.forEach((row, ri) => {
-      const eps = state.mapping.endpoints.map((ep) => endpointLoc(row, ep));
+    rows.forEach((row, ri) => {
+      const eps = endpoints.map((ep) => endpointLoc(row, ep));
       const matchedEndpoints = [];
       let matchedQuery = null;
       eps.forEach((loc, ei) => {
@@ -491,24 +503,31 @@
         matchedRows.push({ ri, row, eps, matchedEndpoints, matchedQuery });
       }
     });
-
-    state.lastResult = { queries, matchedRows };
-    renderResults();
+    return matchedRows;
   }
 
   function aggregateOptics(matchedRows, scope) {
+    return aggregatePure(matchedRows, state.mapping.optics, state.mapping.endpoints, scope);
+  }
+
+  // Pure: total optics across matched rows. In "endpoint" scope, an optic is
+  // counted only when it sits on a side that matched. No DOM/state.
+  function aggregatePure(matchedRows, optics, endpoints, scope) {
     const map = new Map(); // pn -> { pn, desc, qty }
     let unassignedNote = false;
 
     for (const mr of matchedRows) {
-      for (const op of state.mapping.optics) {
+      for (const op of optics) {
         if (op.pn == null) continue;
         // Scope filter: only count optics that sit at a matched endpoint.
-        if (scope === "endpoint" && op.endpoint != null) {
-          if (!mr.matchedEndpoints.includes(op.endpoint)) continue;
-        } else if (scope === "endpoint" && op.endpoint == null && state.mapping.endpoints.length > 1) {
-          // Optic not tied to a side; count it but flag.
-          unassignedNote = true;
+        if (scope === "endpoint") {
+          const idxs = opticEndpointIdxs(op, endpoints);
+          if (idxs == null) {
+            // Can't tell which side this optic is on; count it but flag.
+            if (endpoints.length > 1) unassignedNote = true;
+          } else if (!idxs.some((i) => mr.matchedEndpoints.includes(i))) {
+            continue; // optic is on a side that didn't match — skip
+          }
         }
         const pnVal = String(mr.row[op.pn] || "").trim();
         if (!pnVal) continue;
@@ -744,11 +763,11 @@
 
     // Mapping buttons
     $("addEndpointBtn").onclick = () => {
-      state.mapping.endpoints.push({ mode: "combined", combined: 0, sector: null, rack: null, ru: null, name: state.headers[0] });
+      state.mapping.endpoints.push({ mode: "combined", combined: 0, sector: null, rack: null, ru: null, name: state.headers[0], side: sideToken(state.headers[0]) });
       renderMapping();
     };
     $("addOpticBtn").onclick = () => {
-      state.mapping.optics.push({ pn: 0, qty: null, desc: null, endpoint: null, name: state.headers[0] });
+      state.mapping.optics.push({ pn: 0, qty: null, desc: null, endpoint: null, side: sideToken(state.headers[0]), name: state.headers[0] });
       renderMapping();
     };
     $("remapBtn").onclick = () => { autoDetectMapping(); renderMapping(); };
@@ -791,6 +810,9 @@
 
   // Expose a tiny surface for the headless test harness (Node/JSDOM).
   if (typeof module !== "undefined" && module.exports) {
-    module.exports = { parseLocation, locFromParts, locMatches, locLabel };
+    module.exports = {
+      parseLocation, locFromParts, locMatches, locLabel,
+      sideToken, endpointLoc, opticEndpointIdxs, matchRowsPure, aggregatePure,
+    };
   }
 })();

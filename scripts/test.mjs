@@ -24,7 +24,10 @@ const sandbox = {
 };
 const fn = new Function(...Object.keys(sandbox), src);
 fn(...Object.values(sandbox));
-const { parseLocation, locFromParts, locMatches, locLabel } = moduleShim.exports;
+const {
+  parseLocation, locFromParts, locMatches, locLabel,
+  sideToken, matchRowsPure, aggregatePure,
+} = moduleShim.exports;
 
 let pass = 0;
 function check(name, cond) {
@@ -77,5 +80,55 @@ check("100G SR4 x1 at location", atLoc["OPT-QSFP28-100G-SR4"] === 1);
 check("400G FR4 x1 at location", atLoc["OPT-QSFPDD-400G-FR4"] === 1);
 check("25G SR x1 at location", atLoc["OPT-SFP28-25G-SR"] === 1);
 check("800G 2FR4 x1 at location", atLoc["OPT-OSFP-800G-2FR4"] === 1);
+
+// ---------------------------------------------------------------------------
+// Regression for the real MASTER-US-EAST cutsheet layout: several location
+// columns per side (LOCODE / LOC:CAB:RU / BREAKOUT / PATCH-PANEL). Optics must
+// bind to a SIDE, not the first location column, or "at searched location"
+// wrongly returns 0.
+// ---------------------------------------------------------------------------
+console.log("\nreal-cutsheet layout (side-based optic binding):");
+const H2 = [
+  "A-SIDE LOCODE", "A-LOC:CAB:RU", "A-BREAKOUT LOC:CAB:RU", "A-OPTIC", "A-PATCH-PANEL LOC:CAB:RU:PORT",
+  "Z-SIDE LOCODE", "Z-LOC:CAB:RU", "Z-BREAKOUT LOC:CAB:RU", "Z-OPTIC", "Z-PATCH-PANEL LOC:CAB:RU:PORT",
+];
+check("sideToken(Z-SIDE LOCODE) === z", sideToken("Z-SIDE LOCODE") === "z");
+check("sideToken(Z-LOC:CAB:RU) === z", sideToken("Z-LOC:CAB:RU") === "z");
+check("sideToken(A-OPTIC) === a && sideToken(Z-OPTIC) === z", sideToken("A-OPTIC") === "a" && sideToken("Z-OPTIC") === "z");
+
+// Mapping as auto-detect would build it: every "loc"-ish column is an endpoint,
+// each carrying its side; the two optic columns carry their side.
+const ep = (i) => ({ mode: "combined", combined: i, sector: null, rack: null, ru: null, name: H2[i], side: sideToken(H2[i]) });
+const endpoints2 = [0, 1, 2, 4, 5, 6, 7, 9].map(ep);
+const optic = (i) => ({ pn: i, qty: null, desc: null, endpoint: null, side: sideToken(H2[i]), name: H2[i] });
+const optics2 = [optic(3), optic(8)];
+
+const DR = "OSFP-800G-2DR4";
+// Z-LOC = s4:021:39 on the matched rows; A-LOC is a different rack.
+const R = (aLoc, aOpt, zLoc, zOpt) =>
+  ["US-CDZ01", aLoc, "", aOpt, "", "US-CDZ01", zLoc, "", zOpt, ""];
+const rows2 = [
+  R("s4:010:11", "",  "s4:021:39", DR),   // A-optic blank
+  R("s4:010:12", "",  "s4:021:39", DR),   // A-optic blank
+  R("s4:010:13", DR,  "s4:021:39", DR),
+  R("s4:010:14", DR,  "s4:021:39", DR),
+  R("s4:010:15", DR,  "s4:021:39", DR),
+  R("s4:099:01", DR,  "s4:099:02", DR),   // noise: does not touch s4:021:39
+];
+
+const q2 = [{ text: "s4:021:39", loc: parseLocation("s4:021:39") }];
+const matched2 = matchRowsPure(rows2, endpoints2, q2);
+check("5 connections reference s4:021:39", matched2.length === 5);
+
+const atSide = aggregatePure(matched2, optics2, endpoints2, "endpoint");
+const totalSide = atSide.list.reduce((s, r) => s + r.qty, 0);
+console.log("    at searched location:", JSON.stringify(atSide.list));
+check("optics at location is NOT zero (the reported bug)", totalSide > 0);
+check("5 optics at searched location (Z-OPTIC only)", totalSide === 5);
+check("exactly one distinct PN at location", atSide.list.length === 1 && atSide.list[0].pn === DR);
+
+const both = aggregatePure(matched2, optics2, endpoints2, "all");
+const totalBoth = both.list.reduce((s, r) => s + r.qty, 0);
+check("whole-connection counts both ends (5 Z + 3 A = 8)", totalBoth === 8);
 
 console.log(`\nAll ${pass} checks passed.`);
